@@ -143,6 +143,22 @@ export default function SettingsScreen() {
           <Text style={styles.emailValue}>{profile?.email || 'Sem email'}</Text>
         </Card>
 
+        {/* Credit Cards Section */}
+        <Card padding="lg" style={styles.sectionCard}>
+          <Text style={styles.sectionTitle}>Cartões de Crédito</Text>
+          <Text style={styles.fieldDescription}>
+            Gerencie seus cartões de crédito para lançar compras parceladas e controlar suas faturas.
+          </Text>
+
+          <Button
+            title="Gerenciar Cartões"
+            onPress={() => router.push('/settings/credit-cards' as any)}
+            variant="outline"
+            size="md"
+            icon="card-outline"
+          />
+        </Card>
+
         {/* Preferences Section */}
         <Card padding="lg" style={styles.sectionCard}>
           <Text style={styles.sectionTitle}>Preferências</Text>

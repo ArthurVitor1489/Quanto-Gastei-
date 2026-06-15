@@ -153,14 +153,17 @@ export default function HistoryScreen() {
           text: 'Excluir',
           style: 'destructive',
           onPress: () => {
-            deleteTx(id, {
-              onError: (err: any) => {
-                Alert.alert(
-                  'Erro ao Excluir',
-                  err.message || 'Não foi possível excluir a transação.'
-                );
-              },
-            });
+            deleteTx(
+              { id },
+              {
+                onError: (err: any) => {
+                  Alert.alert(
+                    'Erro ao Excluir',
+                    err.message || 'Não foi possível excluir a transação.'
+                  );
+                },
+              }
+            );
           },
         },
       ]

@@ -22,6 +22,10 @@ export interface Transaction {
   date: string;
   notes: string | null;
   is_recurring: boolean;
+  credit_card_id?: string | null;
+  installment_group_id?: string | null;
+  installment_number?: number | null;
+  total_installments?: number | null;
   created_at: string;
   updated_at: string;
   // Joined relations

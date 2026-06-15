@@ -3,6 +3,62 @@ import { Transaction, TransactionFilter } from '@/types/transaction';
 import { Category } from '@/types/category';
 import { Asset } from '@/types/asset';
 
+// Helper to calculate due dates based on closing and due days of the credit card
+const calculateInstallmentDates = (purchaseDateStr: string, closingDay: number, dueDay: number, count: number): string[] => {
+  const dates: string[] = [];
+  const [year, month, day] = purchaseDateStr.split('-').map(Number);
+  
+  let currentYear = year;
+  let currentMonth = month; // 1-indexed
+
+  // If purchase day is on or after the closing day, it goes to the next month's bill
+  if (day >= closingDay) {
+    currentMonth += 1;
+    if (currentMonth > 12) {
+      currentMonth = 1;
+      currentYear += 1;
+    }
+  }
+
+  for (let i = 0; i < count; i++) {
+    const mStr = currentMonth.toString().padStart(2, '0');
+    const dStr = dueDay.toString().padStart(2, '0');
+    dates.push(`${currentYear}-${mStr}-${dStr}`);
+
+    // Move to next month
+    currentMonth += 1;
+    if (currentMonth > 12) {
+      currentMonth = 1;
+      currentYear += 1;
+    }
+  }
+
+  return dates;
+};
+
+// Helper for simple monthly installments when card is not specified
+const calculateSimpleMonthlyDates = (purchaseDateStr: string, count: number): string[] => {
+  const dates: string[] = [];
+  const [year, month, day] = purchaseDateStr.split('-').map(Number);
+  
+  let currentYear = year;
+  let currentMonth = month;
+
+  for (let i = 0; i < count; i++) {
+    const mStr = currentMonth.toString().padStart(2, '0');
+    const dStr = day.toString().padStart(2, '0');
+    dates.push(`${currentYear}-${mStr}-${dStr}`);
+
+    currentMonth += 1;
+    if (currentMonth > 12) {
+      currentMonth = 1;
+      currentYear += 1;
+    }
+  }
+
+  return dates;
+};
+
 // Helper to map UI/Zod keys to DB keys
 const mapTransactionInput = (transaction: any) => {
   return {
@@ -15,6 +71,8 @@ const mapTransactionInput = (transaction: any) => {
     date: transaction.transaction_date || transaction.date,
     notes: transaction.notes || null,
     is_recurring: transaction.is_recurring ?? false,
+    credit_card_id: transaction.credit_card_id || null,
+    installments: Number(transaction.installments || 1),
   };
 };
 
@@ -31,6 +89,10 @@ const mapRowToTransaction = (row: any): Transaction => {
     date: row.date,
     notes: row.notes,
     is_recurring: Boolean(row.is_recurring),
+    credit_card_id: row.credit_card_id || null,
+    installment_group_id: row.installment_group_id || null,
+    installment_number: row.installment_number !== null ? Number(row.installment_number) : null,
+    total_installments: row.total_installments !== null ? Number(row.total_installments) : null,
     created_at: row.created_at,
     updated_at: row.updated_at,
     category: row.category_id ? {
@@ -58,34 +120,65 @@ const mapRowToTransaction = (row: any): Transaction => {
 };
 
 /**
- * Creates a new transaction in the SQLite database.
+ * Creates a new transaction (or multiple transactions for credit card installments) in the SQLite database.
  */
 export const createTransaction = async (transaction: any): Promise<Transaction> => {
   const db = getDB();
   const userId = 'local-user';
-  const id = generateUUID();
   const data = mapTransactionInput(transaction);
+  const totalInstallments = data.payment_method === 'credit' ? data.installments : 1;
+  const installmentAmount = totalInstallments > 0 ? (data.amount / totalInstallments) : data.amount;
 
   try {
-    await db.runAsync(
-      `INSERT INTO transactions (id, user_id, asset_id, category_id, type, amount, description, payment_method, date, notes, is_recurring)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        id,
-        userId,
-        data.asset_id,
-        data.category_id,
-        data.type,
-        data.amount,
-        data.description,
-        data.payment_method,
-        data.date,
-        data.notes,
-        data.is_recurring ? 1 : 0
-      ]
-    );
+    // 1. Calculate installment dates
+    let installmentDates: string[] = [];
+    if (data.payment_method === 'credit' && data.credit_card_id) {
+      const card = await db.getFirstAsync<any>('SELECT closing_day, due_day FROM credit_cards WHERE id = ?', [data.credit_card_id]);
+      if (card) {
+        installmentDates = calculateInstallmentDates(data.date, Number(card.closing_day), Number(card.due_day), totalInstallments);
+      } else {
+        installmentDates = calculateSimpleMonthlyDates(data.date, totalInstallments);
+      }
+    } else {
+      installmentDates = calculateSimpleMonthlyDates(data.date, totalInstallments);
+    }
 
-    const newTx = await getTransaction(id);
+    // 2. Insert transactions
+    const groupUUID = totalInstallments > 1 ? generateUUID() : null;
+    let firstTxId = '';
+
+    for (let i = 0; i < totalInstallments; i++) {
+      const id = generateUUID();
+      if (i === 0) firstTxId = id;
+      const instNumber = i + 1;
+      const instDate = installmentDates[i];
+      const instDesc = totalInstallments > 1 ? `${data.description} (${instNumber}/${totalInstallments})` : data.description;
+
+      await db.runAsync(
+        `INSERT INTO transactions (
+          id, user_id, asset_id, category_id, credit_card_id, type, amount, description, payment_method, date, notes, is_recurring, installment_group_id, installment_number, total_installments
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          userId,
+          data.asset_id,
+          data.category_id,
+          data.credit_card_id,
+          data.type,
+          installmentAmount,
+          instDesc,
+          data.payment_method,
+          instDate,
+          data.notes,
+          data.is_recurring ? 1 : 0,
+          groupUUID,
+          totalInstallments > 1 ? instNumber : null,
+          totalInstallments > 1 ? totalInstallments : null
+        ]
+      );
+    }
+
+    const newTx = await getTransaction(firstTxId);
     if (!newTx) throw new Error('Falha ao recuperar a transação inserida');
     return newTx;
   } catch (error) {
@@ -95,20 +188,64 @@ export const createTransaction = async (transaction: any): Promise<Transaction> 
 };
 
 /**
- * Updates an existing transaction in the SQLite database.
+ * Updates an existing transaction (supporting single or group edit modes).
  */
-export const updateTransaction = async (id: string, transaction: any): Promise<Transaction> => {
+export const updateTransaction = async (
+  id: string,
+  transaction: any,
+  updateMode: 'single' | 'group' = 'single'
+): Promise<Transaction> => {
   const db = getDB();
   const data = mapTransactionInput(transaction);
 
   try {
+    if (updateMode === 'group') {
+      const existingTx = await db.getFirstAsync<any>('SELECT installment_group_id FROM transactions WHERE id = ?', [id]);
+      if (existingTx && existingTx.installment_group_id) {
+        // Group Update
+        // Note: we update amount (per-installment), category, description, asset, notes.
+        // We keep the original dates and installment numbers intact.
+        await db.runAsync(
+          `UPDATE transactions
+           SET asset_id = ?, category_id = ?, credit_card_id = ?, type = ?, amount = ?, description = ?, notes = ?, updated_at = datetime('now')
+           WHERE installment_group_id = ?`,
+          [
+            data.asset_id,
+            data.category_id,
+            data.credit_card_id,
+            data.type,
+            data.amount,
+            data.description,
+            data.notes,
+            existingTx.installment_group_id
+          ]
+        );
+
+        // Update descriptions dynamically to match "(X/Y)" structure if description changed
+        const rows = await db.getAllAsync<any>(
+          'SELECT id, installment_number, total_installments FROM transactions WHERE installment_group_id = ?',
+          [existingTx.installment_group_id]
+        );
+        for (const row of rows) {
+          const newDesc = `${data.description} (${row.installment_number}/${row.total_installments})`;
+          await db.runAsync('UPDATE transactions SET description = ? WHERE id = ?', [newDesc, row.id]);
+        }
+
+        const updated = await getTransaction(id);
+        if (!updated) throw new Error('Falha ao recuperar a transação atualizada');
+        return updated;
+      }
+    }
+
+    // Single Update
     await db.runAsync(
       `UPDATE transactions
-       SET asset_id = ?, category_id = ?, type = ?, amount = ?, description = ?, payment_method = ?, date = ?, notes = ?, is_recurring = ?, updated_at = datetime('now')
+       SET asset_id = ?, category_id = ?, credit_card_id = ?, type = ?, amount = ?, description = ?, payment_method = ?, date = ?, notes = ?, is_recurring = ?, updated_at = datetime('now')
        WHERE id = ?`,
       [
         data.asset_id,
         data.category_id,
+        data.credit_card_id,
         data.type,
         data.amount,
         data.description,
@@ -130,11 +267,18 @@ export const updateTransaction = async (id: string, transaction: any): Promise<T
 };
 
 /**
- * Deletes a transaction from the SQLite database.
+ * Deletes a transaction (supporting single or group deletion modes).
  */
-export const deleteTransaction = async (id: string): Promise<void> => {
+export const deleteTransaction = async (id: string, deleteMode: 'single' | 'group' = 'single'): Promise<void> => {
   const db = getDB();
   try {
+    if (deleteMode === 'group') {
+      const tx = await db.getFirstAsync<any>('SELECT installment_group_id FROM transactions WHERE id = ?', [id]);
+      if (tx && tx.installment_group_id) {
+        await db.runAsync('DELETE FROM transactions WHERE installment_group_id = ?', [tx.installment_group_id]);
+        return;
+      }
+    }
     await db.runAsync('DELETE FROM transactions WHERE id = ?', [id]);
   } catch (error) {
     console.error('Error in deleteTransaction SQLite:', error);
@@ -312,4 +456,5 @@ export const getCategories = async (): Promise<Category[]> => {
     throw error;
   }
 };
+
 

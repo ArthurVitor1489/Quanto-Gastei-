@@ -61,11 +61,21 @@ export const initializeDatabase = async (): Promise<void> => {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS credit_cards (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      closing_day INTEGER NOT NULL CHECK(closing_day BETWEEN 1 AND 31),
+      due_day INTEGER NOT NULL CHECK(due_day BETWEEN 1 AND 31),
+      limit_amount REAL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE TABLE IF NOT EXISTS transactions (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
       asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE RESTRICT,
       category_id TEXT REFERENCES categories(id) ON DELETE SET NULL,
+      credit_card_id TEXT REFERENCES credit_cards(id) ON DELETE SET NULL,
       type TEXT NOT NULL CHECK(type IN ('income', 'expense', 'transfer', 'investment_buy', 'investment_sell')),
       amount REAL NOT NULL CHECK(amount > 0),
       description TEXT,
@@ -73,10 +83,36 @@ export const initializeDatabase = async (): Promise<void> => {
       date TEXT NOT NULL,
       notes TEXT,
       is_recurring INTEGER NOT NULL DEFAULT 0,
+      installment_group_id TEXT,
+      installment_number INTEGER,
+      total_installments INTEGER,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
   `);
+
+  // Dynamically add columns to existing transactions table if they don't exist
+  try {
+    await db.execAsync(`
+      ALTER TABLE transactions ADD COLUMN credit_card_id TEXT REFERENCES credit_cards(id) ON DELETE SET NULL;
+    `);
+  } catch (e) {}
+  try {
+    await db.execAsync(`
+      ALTER TABLE transactions ADD COLUMN installment_group_id TEXT;
+    `);
+  } catch (e) {}
+  try {
+    await db.execAsync(`
+      ALTER TABLE transactions ADD COLUMN installment_number INTEGER;
+    `);
+  } catch (e) {}
+  try {
+    await db.execAsync(`
+      ALTER TABLE transactions ADD COLUMN total_installments INTEGER;
+    `);
+  } catch (e) {}
+
 
   // 2. Check if assets already seeded, if not, seed default assets
   const assetsCountRes = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM assets');

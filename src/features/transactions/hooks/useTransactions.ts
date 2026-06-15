@@ -55,8 +55,8 @@ export const useCreateTransaction = () => {
 export const useUpdateTransaction = () => {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, transaction }: { id: string; transaction: any }) =>
-      updateTransaction(id, transaction),
+    mutationFn: ({ id, transaction, updateMode }: { id: string; transaction: any; updateMode?: 'single' | 'group' }) =>
+      updateTransaction(id, transaction, updateMode),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['transaction', data.id] });
@@ -74,7 +74,8 @@ export const useUpdateTransaction = () => {
 export const useDeleteTransaction = () => {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: deleteTransaction,
+    mutationFn: ({ id, deleteMode }: { id: string; deleteMode?: 'single' | 'group' }) =>
+      deleteTransaction(id, deleteMode),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });

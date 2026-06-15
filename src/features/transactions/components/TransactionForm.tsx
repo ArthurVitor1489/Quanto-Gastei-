@@ -22,9 +22,12 @@ import Input from '@/components/Input';
 import AssetPicker from './AssetPicker';
 import CategoryPicker from './CategoryPicker';
 import PaymentMethodPicker from './PaymentMethodPicker';
+import CreditCardPicker from './CreditCardPicker';
 import { useAssets, useCategories } from '../hooks/useTransactions';
+import { useCreditCards } from '@/features/portfolio/hooks/useCreditCards';
 import { Asset } from '@/types/asset';
 import { Category } from '@/types/category';
+import { CreditCard } from '@/types/creditCard';
 import { TransactionType, PaymentMethod } from '@/types/transaction';
 import { formatRelativeDate } from '@/utils/formatters';
 import { toLocalISOString } from '@/utils/dateHelpers';
@@ -45,6 +48,8 @@ interface TransactionFormProps {
     date?: string;
     notes?: string;
     is_recurring?: boolean;
+    credit_card_id?: string | null;
+    installments?: number;
   };
   onSubmit: (data: any) => void;
   onDelete?: () => void;
@@ -68,6 +73,8 @@ const formSchema = z.object({
   date: z.string().refine((val) => !isNaN(Date.parse(val)), { message: 'Data inválida' }),
   notes: z.string().max(500, { message: 'Máximo 500 caracteres' }).optional().or(z.literal('')),
   is_recurring: z.boolean().optional(),
+  credit_card_id: z.string().nullable().optional(),
+  installments: z.string().optional().or(z.literal('')),
 });
 
 type FormSchemaInput = z.infer<typeof formSchema>;
@@ -89,12 +96,15 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
   loading = false,
 }) => {
   const { data: assets = [] } = useAssets();
+  const { creditCards = [] } = useCreditCards();
   
   const [assetPickerVisible, setAssetPickerVisible] = useState(false);
   const [categoryPickerVisible, setCategoryPickerVisible] = useState(false);
+  const [creditCardPickerVisible, setCreditCardPickerVisible] = useState(false);
   
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<Category | null>(null);
+  const [selectedCreditCard, setSelectedCreditCard] = useState<CreditCard | null>(null);
   
   const [dateMode, setDateMode] = useState<'today' | 'yesterday' | 'custom'>('today');
   const [customDateInput, setCustomDateInput] = useState('');
@@ -118,12 +128,16 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
       date: initialValues?.date || getTodayDbString(),
       notes: initialValues?.notes || '',
       is_recurring: initialValues?.is_recurring || false,
+      credit_card_id: initialValues?.credit_card_id || null,
+      installments: initialValues?.installments ? String(initialValues.installments) : '1',
     },
   });
 
   const watchType = watch('type');
   const watchAssetId = watch('asset_id');
   const watchCategoryId = watch('category_id');
+  const watchPaymentMethod = watch('payment_method');
+  const watchCreditCardId = watch('credit_card_id');
   const watchDate = watch('date');
 
   // Handle selected asset sync
@@ -159,6 +173,21 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
       }
     }
   }, [categories, watchCategoryId, initialValues]);
+
+  // Handle credit card sync
+  useEffect(() => {
+    if (creditCards.length > 0) {
+      if (initialValues?.credit_card_id) {
+        const found = creditCards.find((c) => c.id === initialValues.credit_card_id);
+        if (found) setSelectedCreditCard(found);
+      } else if (watchCreditCardId) {
+        const found = creditCards.find((c) => c.id === watchCreditCardId);
+        if (found) setSelectedCreditCard(found);
+      } else {
+        setSelectedCreditCard(null);
+      }
+    }
+  }, [creditCards, watchCreditCardId, initialValues]);
 
   // Date selection logic
   useEffect(() => {
@@ -356,11 +385,76 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
             render={({ field: { onChange, value } }) => (
               <PaymentMethodPicker
                 selectedMethod={value ?? null}
-                onChange={onChange}
+                onChange={(method) => {
+                  onChange(method);
+                  // Reset credit card and installments if method changes from credit
+                  if (method !== 'credit') {
+                    setValue('credit_card_id', null);
+                    setValue('installments', '1');
+                    setSelectedCreditCard(null);
+                  }
+                }}
                 error={errors.payment_method?.message}
               />
             )}
           />
+        )}
+
+        {/* Credit Card & Installments Configuration */}
+        {showPaymentMethod && watchPaymentMethod === 'credit' && (
+          <View style={[styles.pickersCard, { marginTop: spacing.md }]}>
+            {/* Credit Card Picker Row */}
+            <Pressable
+              onPress={() => setCreditCardPickerVisible(true)}
+              style={styles.pickerRow}
+            >
+              <View style={styles.pickerRowLeft}>
+                <View style={styles.pickerIconCircle}>
+                  <Ionicons name="card-outline" size={20} color={colors.accent} />
+                </View>
+                <View>
+                  <Text style={styles.pickerRowLabel}>Cartão de Crédito</Text>
+                  <Text style={styles.pickerRowValue}>
+                    {selectedCreditCard ? selectedCreditCard.name : 'Selecionar Cartão'}
+                  </Text>
+                </View>
+              </View>
+              <MaterialIcons name="chevron-right" size={20} color={colors.textSecondary} />
+            </Pressable>
+
+            {/* Installments Count Input (Only on creation) */}
+            {!initialValues && (
+              <>
+                <View style={styles.pickerDivider} />
+                <View style={styles.installmentsRow}>
+                  <View style={styles.installmentsLeft}>
+                    <View style={styles.pickerIconCircle}>
+                      <Ionicons name="calendar-outline" size={20} color={colors.income} />
+                    </View>
+                    <View>
+                      <Text style={styles.pickerRowLabel}>Número de Parcelas</Text>
+                      <Text style={styles.pickerRowValue}>Digite a quantidade de vezes</Text>
+                    </View>
+                  </View>
+                  <Controller
+                    name="installments"
+                    control={control}
+                    render={({ field: { onChange, value } }) => (
+                      <TextInput
+                        keyboardType="numeric"
+                        placeholder="1"
+                        placeholderTextColor={colors.textSecondary}
+                        value={value}
+                        onChangeText={onChange}
+                        style={styles.installmentsInput}
+                        maxLength={2}
+                      />
+                    )}
+                  />
+                </View>
+              </>
+            )}
+          </View>
         )}
 
         {/* Date Selection widget */}
@@ -518,6 +612,17 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
           setSelectedCategory(category);
         }}
       />
+
+      {/* Credit Card Picker Modal */}
+      <CreditCardPicker
+        visible={creditCardPickerVisible}
+        onClose={() => setCreditCardPickerVisible(false)}
+        selectedCardId={watchCreditCardId ?? null}
+        onSelectCard={(card) => {
+          setValue('credit_card_id', card.id);
+          setSelectedCreditCard(card);
+        }}
+      />
     </KeyboardAvoidingView>
   );
 };
@@ -650,6 +755,32 @@ const styles = StyleSheet.create({
   pickerDivider: {
     height: 1,
     backgroundColor: colors.border,
+  },
+  installmentsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.sm,
+  },
+  installmentsLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    flex: 1,
+  },
+  installmentsInput: {
+    fontFamily,
+    fontSize: fontSize.md,
+    color: colors.textPrimary,
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderWidth: 1,
+    borderRadius: borderRadius.md,
+    paddingHorizontal: spacing.md,
+    width: 60,
+    height: 40,
+    textAlign: 'center',
   },
   sectionCard: {
     backgroundColor: colors.card,
