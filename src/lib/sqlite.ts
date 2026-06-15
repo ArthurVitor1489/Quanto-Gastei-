@@ -41,11 +41,24 @@ class WebSQLiteDatabase {
       if (match) {
         const tableName = match[1].toLowerCase();
         const columns = match[2].split(',').map(c => c.trim());
+        const valuesRaw = match[3].split(',').map(v => v.trim());
         const tableData = this.getTable(tableName);
         
         const newRow: any = {};
+        let paramIdx = 0;
+        
         columns.forEach((col, idx) => {
-          newRow[col] = params[idx];
+          const valToken = valuesRaw[idx];
+          if (valToken === '?') {
+            newRow[col] = params[paramIdx++];
+          } else if (valToken.startsWith("'") && valToken.endsWith("'")) {
+            newRow[col] = valToken.slice(1, -1);
+          } else if (valToken.toUpperCase() === 'NULL') {
+            newRow[col] = null;
+          } else {
+            const num = Number(valToken);
+            newRow[col] = isNaN(num) ? valToken : num;
+          }
         });
         
         if (!newRow.created_at) newRow.created_at = new Date().toISOString();
@@ -194,55 +207,70 @@ class WebSQLiteDatabase {
     if (!whereSql) return true;
     
     let normalized = whereSql.trim().replace(/\s+/g, ' ');
-    const conditions = normalized.split(/\s+AND\s+/i);
+    const orSegments = normalized.split(/\s+OR\s+/i);
     let paramIndex = paramOffset;
     
-    for (const cond of conditions) {
-      const match = cond.match(/([\w.]+)\s*(=|!=|>|<|>=|<=|IS\s+NOT|IS|LIKE)\s*(.+)$/i);
-      if (!match) continue;
-      
-      let field = match[1].trim();
-      if (field.includes('.')) field = field.split('.')[1];
-      
-      const op = match[2].toUpperCase().replace(/\s+/g, ' ');
-      let rawVal = match[3].trim();
-      
-      let targetVal: any;
-      if (rawVal === '?') {
-        targetVal = params[paramIndex++];
-      } else if (rawVal.startsWith("'") && rawVal.endsWith("'")) {
-        targetVal = rawVal.slice(1, -1);
-      } else if (rawVal.toUpperCase() === 'NULL') {
-        targetVal = null;
-      } else {
-        targetVal = Number(rawVal);
+    const evaluateSegment = (segment: string): boolean => {
+      const andConditions = segment.split(/\s+AND\s+/i);
+      for (const cond of andConditions) {
+        const match = cond.match(/([\w.]+)\s*(=|!=|>|<|>=|<=|IS\s+NOT|IS|LIKE)\s*(.+)$/i);
+        if (!match) continue;
+        
+        let field = match[1].trim();
+        if (field.includes('.')) field = field.split('.')[1];
+        
+        const op = match[2].toUpperCase().replace(/\s+/g, ' ');
+        let rawVal = match[3].trim();
+        
+        let targetVal: any;
+        if (rawVal === '?') {
+          targetVal = params[paramIndex++];
+        } else if (rawVal.startsWith("'") && rawVal.endsWith("'")) {
+          targetVal = rawVal.slice(1, -1);
+        } else if (rawVal.toUpperCase() === 'NULL') {
+          targetVal = null;
+        } else {
+          targetVal = Number(rawVal);
+        }
+        
+        const rowVal = row[field];
+        
+        let matchResult = false;
+        if (op === '=') {
+          matchResult = (rowVal == targetVal);
+        } else if (op === '!=') {
+          matchResult = (rowVal != targetVal);
+        } else if (op === '>') {
+          matchResult = (rowVal > targetVal);
+        } else if (op === '<') {
+          matchResult = (rowVal < targetVal);
+        } else if (op === '>=') {
+          matchResult = (rowVal >= targetVal);
+        } else if (op === '<=') {
+          matchResult = (rowVal <= targetVal);
+        } else if (op === 'IS') {
+          matchResult = (targetVal === null && (rowVal === null || rowVal === undefined));
+        } else if (op === 'IS NOT') {
+          matchResult = (targetVal === null && rowVal !== null && rowVal !== undefined);
+        } else if (op === 'LIKE') {
+          const cleanPattern = targetVal.toString().replace(/%/g, '').toLowerCase();
+          matchResult = !!(rowVal && rowVal.toString().toLowerCase().includes(cleanPattern));
+        }
+        
+        if (!matchResult) return false;
       }
-      
-      const rowVal = row[field];
-      
-      if (op === '=') {
-        if (rowVal != targetVal) return false;
-      } else if (op === '!=') {
-        if (rowVal == targetVal) return false;
-      } else if (op === '>') {
-        if (!(rowVal > targetVal)) return false;
-      } else if (op === '<') {
-        if (!(rowVal < targetVal)) return false;
-      } else if (op === '>=') {
-        if (!(rowVal >= targetVal)) return false;
-      } else if (op === '<=') {
-        if (!(rowVal <= targetVal)) return false;
-      } else if (op === 'IS') {
-        if (targetVal === null && rowVal !== null && rowVal !== undefined) return false;
-      } else if (op === 'IS NOT') {
-        if (targetVal === null && (rowVal === null || rowVal === undefined)) return false;
-      } else if (op === 'LIKE') {
-        const cleanPattern = targetVal.toString().replace(/%/g, '').toLowerCase();
-        if (!rowVal || !rowVal.toString().toLowerCase().includes(cleanPattern)) return false;
+      return true;
+    };
+    
+    for (const segment of orSegments) {
+      const startParamIndex = paramIndex;
+      if (evaluateSegment(segment)) {
+        return true;
       }
+      paramIndex = startParamIndex;
     }
     
-    return true;
+    return false;
   }
 }
 
@@ -271,6 +299,18 @@ export const getDB = (): AppDatabase => {
  * Creates the schema (profiles, assets, categories, transactions) and seeds default data.
  */
 export const initializeDatabase = async (): Promise<void> => {
+  // Wipe any legacy/scrambled localStorage tables on web before initializing
+  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    if (!localStorage.getItem('quantogastei_db_version_3')) {
+      localStorage.removeItem('quantogastei_db_profiles');
+      localStorage.removeItem('quantogastei_db_assets');
+      localStorage.removeItem('quantogastei_db_categories');
+      localStorage.removeItem('quantogastei_db_credit_cards');
+      localStorage.removeItem('quantogastei_db_transactions');
+      localStorage.setItem('quantogastei_db_version_3', 'true');
+    }
+  }
+
   const db = getDB();
 
   // 1. Create tables
