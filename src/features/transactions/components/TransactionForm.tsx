@@ -572,7 +572,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
 
         {/* Save Button */}
         <Button
-          title={initialValues ? 'Salvar Alterações' : 'Salvar Transação'}
+          title={initialValues?.amount !== undefined ? 'Salvar Alterações' : 'Salvar Transação'}
           onPress={handleSubmit(onFormSubmit as any)}
           loading={loading}
           variant="primary"
