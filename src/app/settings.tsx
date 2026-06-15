@@ -9,7 +9,7 @@ import Input from '@/components/Input';
 import Button from '@/components/Button';
 import Card from '@/components/Card';
 import { useAuth } from '@/features/auth/hooks/useAuth';
-import { supabase } from '@/lib/supabase';
+import { getDB } from '@/lib/sqlite';
 import { colors } from '@/theme/colors';
 import { spacing, borderRadius } from '@/theme/spacing';
 import { fontSize, fontWeight, fontFamily } from '@/theme/typography';
@@ -97,22 +97,13 @@ export default function SettingsScreen() {
             try {
               setResetting(true);
               
+              const db = getDB();
+              
               // 1. Excluir todas as transações do usuário
-              const { error: txError } = await supabase
-                .from('transactions')
-                .delete()
-                .eq('user_id', profile.id);
-
-              if (txError) throw txError;
+              await db.runAsync('DELETE FROM transactions WHERE user_id = ?', [profile.id]);
 
               // 2. Excluir todas as categorias customizadas do usuário
-              const { error: catError } = await supabase
-                .from('categories')
-                .delete()
-                .eq('user_id', profile.id)
-                .eq('is_default', false);
-
-              if (catError) throw catError;
+              await db.runAsync('DELETE FROM categories WHERE user_id = ? AND is_default = 0', [profile.id]);
 
               queryClient.invalidateQueries();
               Alert.alert('Sucesso', 'Todos os seus dados (transações e categorias personalizadas) foram excluídos com sucesso.');

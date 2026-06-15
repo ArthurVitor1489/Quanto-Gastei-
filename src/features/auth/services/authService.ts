@@ -1,119 +1,140 @@
-import { supabase } from '@/lib/supabase';
+import { getDB } from '@/lib/sqlite';
 import { Profile } from '@/types/auth';
-import { Database } from '@/types/supabase';
+import { mockUser, mockSession } from '@/store/authStore';
 
 /**
- * Signs up a new user with email, password, and full name.
- * The display name is stored in raw_user_meta_data.
+ * Signs up a new user (mocked for offline-local architecture).
  */
 export const signUp = async (email: string, password: string, fullName: string) => {
-  const { data, error } = await supabase.auth.signUp({
-    email,
-    password,
-    options: {
-      data: {
-        display_name: fullName,
-        full_name: fullName,
-      },
-    },
-  });
-  if (error) throw error;
-  return data;
-};
+  const db = getDB();
+  const userId = 'local-user';
 
-/**
- * Signs in an existing user with email and password.
- */
-export const signIn = async (email: string, password: string) => {
-  const { data, error } = await supabase.auth.signInWithPassword({
-    email,
-    password,
-  });
-  if (error) throw error;
-  return data;
-};
-
-/**
- * Signs out the currently authenticated user.
- */
-export const signOut = async () => {
-  const { error } = await supabase.auth.signOut();
-  if (error) throw error;
-};
-
-/**
- * Sends a password reset email to the user.
- */
-export const resetPassword = async (email: string) => {
-  const { data, error } = await supabase.auth.resetPasswordForEmail(email);
-  if (error) throw error;
-  return data;
-};
-
-/**
- * Fetches the user profile from the `profiles` table.
- */
-export const getProfile = async (userId: string): Promise<Profile | null> => {
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('id', userId)
-    .single();
-
-  if (error) {
-    if (error.code === 'PGRST116') {
-      return null;
-    }
-    throw error;
+  // Seed user profile locally if not exists
+  const existing = await getProfile(userId);
+  if (!existing) {
+    await db.runAsync(
+      "INSERT INTO profiles (id, display_name, avatar_url, default_currency) VALUES (?, ?, NULL, 'BRL')",
+      [userId, fullName]
+    );
+  } else {
+    await db.runAsync(
+      "UPDATE profiles SET display_name = ? WHERE id = ?",
+      [fullName, userId]
+    );
   }
 
-  const profileData = data as any;
+  const updatedProfile = await getProfile(userId);
+
   return {
-    id: profileData.id,
-    email: '', // Not stored in profiles table
-    display_name: profileData.full_name || null,
-    avatar_url: profileData.avatar_url,
-    default_currency: profileData.preferred_currency || 'BRL',
-    created_at: profileData.created_at || '',
-    updated_at: profileData.updated_at || '',
-  } as unknown as Profile;
+    user: {
+      ...mockUser,
+      display_name: fullName,
+    },
+    session: mockSession,
+    profile: updatedProfile,
+  };
 };
 
 /**
- * Updates an existing user profile in the `profiles` table.
+ * Signs in an existing user (mocked for offline-local architecture).
+ */
+export const signIn = async (email: string, password: string) => {
+  const userId = 'local-user';
+  const profile = await getProfile(userId);
+  
+  return {
+    user: profile ? {
+      ...mockUser,
+      display_name: profile.display_name,
+      default_currency: profile.default_currency,
+    } : mockUser,
+    session: mockSession,
+    profile: profile || mockProfile,
+  };
+};
+
+// Fallback profile if something fails
+const mockProfile: Profile = {
+  id: 'local-user',
+  email: 'local-user@quantogastei.local',
+  display_name: 'Usuário Local',
+  avatar_url: null,
+  default_currency: 'BRL',
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+};
+
+/**
+ * Signs out the user (does nothing since we are locally persistent).
+ */
+export const signOut = async () => {
+  return Promise.resolve();
+};
+
+/**
+ * Sends a password reset email (mocked).
+ */
+export const resetPassword = async (email: string) => {
+  return { success: true };
+};
+
+/**
+ * Fetches the user profile from the local SQLite `profiles` table.
+ */
+export const getProfile = async (userId: string): Promise<Profile | null> => {
+  const db = getDB();
+  try {
+    const row = await db.getFirstAsync<any>(
+      'SELECT * FROM profiles WHERE id = ?',
+      [userId]
+    );
+
+    if (!row) {
+      return null;
+    }
+
+    return {
+      id: row.id,
+      email: 'local-user@quantogastei.local',
+      display_name: row.display_name || null,
+      avatar_url: row.avatar_url || null,
+      default_currency: row.default_currency || 'BRL',
+      created_at: row.created_at || '',
+      updated_at: row.updated_at || '',
+    } as Profile;
+  } catch (error) {
+    console.error('Error in SQLite getProfile:', error);
+    throw error;
+  }
+};
+
+/**
+ * Updates an existing user profile in the local SQLite `profiles` table.
  */
 export const updateProfile = async (
   userId: string,
   updates: Partial<Profile>
 ): Promise<Profile> => {
-  const dbUpdates: any = {};
-  if (updates.display_name !== undefined) {
-    dbUpdates.full_name = updates.display_name;
-  }
-  if (updates.avatar_url !== undefined) {
-    dbUpdates.avatar_url = updates.avatar_url;
-  }
-  if (updates.default_currency !== undefined) {
-    dbUpdates.preferred_currency = updates.default_currency;
-  }
+  const db = getDB();
+  try {
+    const existing = await getProfile(userId);
+    const display_name = updates.display_name !== undefined ? updates.display_name : (existing?.display_name ?? null);
+    const avatar_url = updates.avatar_url !== undefined ? updates.avatar_url : (existing?.avatar_url ?? null);
+    const default_currency = updates.default_currency !== undefined ? updates.default_currency : (existing?.default_currency ?? 'BRL');
 
-  const { data, error } = await (supabase
-    .from('profiles') as any)
-    .update(dbUpdates)
-    .eq('id', userId)
-    .select()
-    .single();
+    await db.runAsync(
+      "UPDATE profiles SET display_name = ?, avatar_url = ?, default_currency = ?, updated_at = datetime('now') WHERE id = ?",
+      [display_name, avatar_url, default_currency, userId]
+    );
 
-  if (error) throw error;
-
-  const profileData = data as any;
-  return {
-    id: profileData.id,
-    email: '',
-    display_name: profileData.full_name || null,
-    avatar_url: profileData.avatar_url,
-    default_currency: profileData.preferred_currency || 'BRL',
-    created_at: profileData.created_at || '',
-    updated_at: profileData.updated_at || '',
-  } as unknown as Profile;
+    const updated = await getProfile(userId);
+    if (!updated) {
+      throw new Error('Failed to load updated profile');
+    }
+    return updated;
+  } catch (error) {
+    console.error('Error in SQLite updateProfile:', error);
+    throw error;
+  }
 };
+

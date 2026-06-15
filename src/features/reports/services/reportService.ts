@@ -1,4 +1,4 @@
-import { supabase } from '@/lib/supabase';
+import { getTransactions } from '@/features/transactions/services/transactionService';
 import { Transaction } from '@/types/transaction';
 import { DisplayCurrency } from '@/types/portfolio';
 import { ReportSummary, CategoryReportItem, MonthlyReportItem, ReportPeriod } from '@/types/report';
@@ -51,20 +51,8 @@ export const getReportSummary = async (
     label,
   };
 
-  // 2. Fetch all user transactions
-  const { data: rawTransactions, error } = await supabase
-    .from('transactions')
-    .select(`
-      *,
-      category:categories(*),
-      asset:assets(*)
-    `)
-    .eq('user_id', userId)
-    .order('date', { ascending: false });
-
-  if (error) throw error;
-
-  const transactions = (rawTransactions || []) as unknown as Transaction[];
+  // 2. Fetch all user transactions from local SQLite
+  const transactions = await getTransactions();
   let rates = MOCK_EXCHANGE_RATES;
   try {
     rates = await getExchangeRates();

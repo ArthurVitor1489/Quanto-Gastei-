@@ -1,4 +1,4 @@
-import { supabase } from '@/lib/supabase';
+import { getDB } from '@/lib/sqlite';
 import { Asset } from '@/types/asset';
 import { PortfolioSummary, PortfolioItem, ExchangeRates, DisplayCurrency } from '@/types/portfolio';
 import { convertToBRL, convertToUSD, convertToEUR, convertToDisplayCurrency } from './assetPriceService';
@@ -6,36 +6,63 @@ import { getCurrentMonth, getMonthRange, addMonths, formatMonthYear, parseLocalD
 
 
 /**
- * Fetches user asset balances using get_user_portfolio RPC.
+ * Fetches user asset balances using SQLite.
  */
 export const getUserPortfolio = async (
   userId: string
 ): Promise<{ asset: Asset; balance: number }[]> => {
-  const { data, error } = await (supabase as any).rpc('get_user_portfolio', {
-    p_user_id: userId,
-  });
+  const db = getDB();
+  try {
+    const query = `
+      SELECT
+        a.id AS asset_id,
+        a.code,
+        a.name,
+        a.symbol,
+        a.asset_type,
+        a.decimals,
+        a.is_active,
+        a.created_at,
+        SUM(
+          CASE
+            WHEN t.type IN ('income', 'investment_sell') THEN t.amount
+            WHEN t.type IN ('expense', 'investment_buy', 'transfer') THEN -t.amount
+            ELSE 0
+          END
+        ) AS balance
+      FROM transactions t
+      INNER JOIN assets a ON a.id = t.asset_id
+      WHERE t.user_id = ?
+      GROUP BY a.id, a.code, a.name, a.symbol, a.asset_type, a.decimals, a.is_active, a.created_at
+      HAVING SUM(
+        CASE
+          WHEN t.type IN ('income', 'investment_sell') THEN t.amount
+          WHEN t.type IN ('expense', 'investment_buy', 'transfer') THEN -t.amount
+          ELSE 0
+        END
+      ) <> 0
+      ORDER BY a.asset_type, a.code
+    `;
 
-  if (error) {
-    console.error('Error fetching user portfolio:', error);
+    const rows = await db.getAllAsync<any>(query, [userId]);
+
+    return rows.map((row: any) => ({
+      asset: {
+        id: row.asset_id,
+        code: row.code,
+        name: row.name,
+        symbol: row.symbol,
+        asset_type: row.asset_type,
+        decimals: Number(row.decimals),
+        is_active: Boolean(row.is_active),
+        created_at: row.created_at,
+      },
+      balance: Number(row.balance),
+    }));
+  } catch (error) {
+    console.error('Error fetching user portfolio SQLite:', error);
     throw error;
   }
-
-  if (!data) return [];
-
-  // Map the DB RPC response to { asset, balance } structure
-  return data.map((row: any) => ({
-    asset: {
-      id: row.asset_id,
-      code: row.code,
-      name: row.name,
-      symbol: row.symbol,
-      asset_type: row.asset_type,
-      decimals: row.decimals,
-      is_active: true,
-      created_at: new Date().toISOString(), // Mock fallback as it is not returned by the RPC
-    },
-    balance: Number(row.balance),
-  }));
 };
 
 /**
@@ -115,19 +142,42 @@ export const getPortfolioHistory = async (
   displayCurrency: DisplayCurrency,
   rates: ExchangeRates
 ): Promise<PortfolioHistoryItem[]> => {
-  // 1. Fetch all transactions chronologically
-  const { data: rawTransactions, error } = await supabase
-    .from('transactions')
-    .select('*, asset:assets(*)')
-    .eq('user_id', userId)
-    .order('date', { ascending: true });
-
-  if (error) {
-    console.error('Error fetching transactions for portfolio history:', error);
+  // 1. Fetch all transactions chronologically from SQLite
+  const db = getDB();
+  let transactions: any[] = [];
+  try {
+    const query = `
+      SELECT 
+        t.*,
+        a.code as asset_code,
+        a.name as asset_name,
+        a.symbol as asset_symbol,
+        a.asset_type as asset_asset_type,
+        a.decimals as asset_decimals
+      FROM transactions t
+      INNER JOIN assets a ON t.asset_id = a.id
+      WHERE t.user_id = ?
+      ORDER BY t.date ASC
+    `;
+    const rows = await db.getAllAsync<any>(query, [userId]);
+    transactions = rows.map((row: any) => ({
+      id: row.id,
+      type: row.type,
+      amount: Number(row.amount),
+      date: row.date,
+      asset: {
+        id: row.asset_id,
+        code: row.asset_code,
+        name: row.asset_name,
+        symbol: row.asset_symbol,
+        asset_type: row.asset_asset_type,
+        decimals: Number(row.asset_decimals),
+      }
+    }));
+  } catch (error) {
+    console.error('Error fetching transactions for portfolio history SQLite:', error);
     throw error;
   }
-
-  const transactions = rawTransactions || [];
 
   // 2. Generate the last 6 months ending ranges
   const history: PortfolioHistoryItem[] = [];

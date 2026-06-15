@@ -1,4 +1,4 @@
-import { supabase } from '@/lib/supabase';
+import { getTransactions } from '@/features/transactions/services/transactionService';
 import { Transaction } from '@/types/transaction';
 import { DisplayCurrency, ExchangeRates } from '@/types/portfolio';
 import { convertAmount } from '@/utils/currencyHelpers';
@@ -45,20 +45,8 @@ export const getDashboardData = async (
   userId: string,
   preferredCurrency: DisplayCurrency = 'BRL'
 ): Promise<DashboardData> => {
-  // 1. Fetch transactions with joined category and asset details
-  const { data: rawTransactions, error: txError } = await supabase
-    .from('transactions')
-    .select(`
-      *,
-      category:categories(*),
-      asset:assets(*)
-    `)
-    .eq('user_id', userId)
-    .order('date', { ascending: false });
-
-  if (txError) throw txError;
-
-  const transactions = (rawTransactions || []) as unknown as Transaction[];
+  // 1. Fetch transactions from local SQLite
+  const transactions = await getTransactions();
 
   // 2. Fetch exchange rates (using real-time endpoints with local fallback)
   let rates = MOCK_EXCHANGE_RATES;

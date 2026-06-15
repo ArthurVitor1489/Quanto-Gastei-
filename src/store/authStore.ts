@@ -16,11 +16,38 @@ interface AuthStoreActions {
 
 export type AuthStore = AuthStoreState & AuthStoreActions;
 
+export const mockUser: User = {
+  id: 'local-user',
+  email: 'local-user@quantogastei.local',
+  display_name: 'Usuário Local',
+  avatar_url: null,
+  default_currency: 'BRL',
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+};
+
+export const mockProfile: Profile = {
+  id: 'local-user',
+  email: 'local-user@quantogastei.local',
+  display_name: 'Usuário Local',
+  avatar_url: null,
+  default_currency: 'BRL',
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+};
+
+export const mockSession: Session = {
+  access_token: 'local-session-token',
+  refresh_token: 'local-session-refresh-token',
+  expires_at: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60, // 1 ano
+  user: mockUser,
+};
+
 export const useAuthStore = create<AuthStore>((set) => ({
-  user: null,
-  session: null,
-  profile: null,
-  initialized: false,
+  user: mockUser,
+  session: mockSession,
+  profile: mockProfile,
+  initialized: true,
   setAuth: (user, session, profile) =>
     set({
       user,
@@ -30,9 +57,9 @@ export const useAuthStore = create<AuthStore>((set) => ({
     }),
   clearAuth: () =>
     set({
-      user: null,
-      session: null,
-      profile: null,
+      user: mockUser,
+      session: mockSession,
+      profile: mockProfile,
     }),
   setInitialized: (initialized) =>
     set({

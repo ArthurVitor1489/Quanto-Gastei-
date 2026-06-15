@@ -1,4 +1,4 @@
-import { supabase } from '@/lib/supabase';
+import { getTransactions } from '@/features/transactions/services/transactionService';
 import { Transaction } from '@/types/transaction';
 import { DisplayCurrency } from '@/types/portfolio';
 import { Insight, UserFinancialContext } from '@/types/insight';
@@ -14,19 +14,8 @@ export const getFinancialInsights = async (
   userId: string,
   preferredCurrency: DisplayCurrency = 'BRL'
 ): Promise<Insight[]> => {
-  // 1. Fetch transactions with category and asset joins
-  const { data: rawTransactions, error } = await supabase
-    .from('transactions')
-    .select(`
-      *,
-      category:categories(*),
-      asset:assets(*)
-    `)
-    .eq('user_id', userId);
-
-  if (error) throw error;
-
-  const transactions = (rawTransactions || []) as unknown as Transaction[];
+  // 1. Fetch transactions from local SQLite
+  const transactions = await getTransactions();
   const rates = MOCK_EXCHANGE_RATES;
 
   // 2. Identify periods
