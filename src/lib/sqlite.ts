@@ -1,4 +1,5 @@
 import * as SQLite from 'expo-sqlite';
+import { Platform } from 'react-native';
 
 // Helper to generate UUIDs locally without external dependencies
 export const generateUUID = (): string => {
@@ -9,11 +10,258 @@ export const generateUUID = (): string => {
   });
 };
 
-let dbInstance: SQLite.SQLiteDatabase | null = null;
+// Mock SQLite implementation for Web platform utilizing localStorage
+class WebSQLiteDatabase {
+  private getTable(table: string): any[] {
+    if (typeof window === 'undefined') return [];
+    const data = localStorage.getItem(`quantogastei_db_${table}`);
+    return data ? JSON.parse(data) : [];
+  }
 
-export const getDB = (): SQLite.SQLiteDatabase => {
+  private setTable(table: string, data: any[]): void {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(`quantogastei_db_${table}`, JSON.stringify(data));
+  }
+
+  async execAsync(sql: string): Promise<void> {
+    const tables = ['profiles', 'assets', 'categories', 'credit_cards', 'transactions'];
+    for (const table of tables) {
+      if (typeof window !== 'undefined' && !localStorage.getItem(`quantogastei_db_${table}`)) {
+        localStorage.setItem(`quantogastei_db_${table}`, JSON.stringify([]));
+      }
+    }
+  }
+
+  async runAsync(sql: string, params: any[] = []): Promise<{ lastInsertRowId: number; changes: number }> {
+    const cleanSql = sql.trim().replace(/\s+/g, ' ');
+    const upperSql = cleanSql.toUpperCase();
+    
+    if (upperSql.startsWith('INSERT INTO')) {
+      const match = cleanSql.match(/INSERT INTO (\w+)\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)/i);
+      if (match) {
+        const tableName = match[1].toLowerCase();
+        const columns = match[2].split(',').map(c => c.trim());
+        const tableData = this.getTable(tableName);
+        
+        const newRow: any = {};
+        columns.forEach((col, idx) => {
+          newRow[col] = params[idx];
+        });
+        
+        if (!newRow.created_at) newRow.created_at = new Date().toISOString();
+        if (!newRow.updated_at) newRow.updated_at = new Date().toISOString();
+        
+        tableData.push(newRow);
+        this.setTable(tableName, tableData);
+        return { lastInsertRowId: tableData.length, changes: 1 };
+      }
+    }
+    
+    if (upperSql.startsWith('UPDATE')) {
+      const match = cleanSql.match(/UPDATE (\w+)\s+SET\s+(.+?)(?:\s+WHERE\s+(.+))?$/i);
+      if (match) {
+        const tableName = match[1].toLowerCase();
+        const setPart = match[2];
+        const wherePart = match[3];
+        
+        const setAssignments = setPart.split(',').map(s => s.trim());
+        const setColumns = setAssignments.map(s => s.split('=')[0].trim());
+        
+        const tableData = this.getTable(tableName);
+        let updatedCount = 0;
+        
+        const updatedTableData = tableData.map(row => {
+          if (this.evaluateWhere(tableName, row, wherePart, params, setColumns.length)) {
+            const newRow = { ...row };
+            setColumns.forEach((col, idx) => {
+              newRow[col] = params[idx];
+            });
+            newRow.updated_at = new Date().toISOString();
+            updatedCount++;
+            return newRow;
+          }
+          return row;
+        });
+        
+        this.setTable(tableName, updatedTableData);
+        return { lastInsertRowId: 0, changes: updatedCount };
+      }
+    }
+    
+    if (upperSql.startsWith('DELETE FROM')) {
+      const match = cleanSql.match(/DELETE FROM (\w+)(?:\s+WHERE\s+(.+))?$/i);
+      if (match) {
+        const tableName = match[1].toLowerCase();
+        const wherePart = match[2];
+        
+        const tableData = this.getTable(tableName);
+        const initialLength = tableData.length;
+        
+        const updatedTableData = tableData.filter(row => {
+          return !this.evaluateWhere(tableName, row, wherePart, params, 0);
+        });
+        
+        this.setTable(tableName, updatedTableData);
+        return { lastInsertRowId: 0, changes: initialLength - updatedTableData.length };
+      }
+    }
+    
+    return { lastInsertRowId: 0, changes: 0 };
+  }
+
+  async getFirstAsync<T>(sql: string, params: any[] = []): Promise<T | null> {
+    const all = await this.getAllAsync<T>(sql, params);
+    return all.length > 0 ? all[0] : null;
+  }
+
+  async getAllAsync<T>(sql: string, params: any[] = []): Promise<T[]> {
+    const cleanSql = sql.trim().replace(/\s+/g, ' ');
+    const upperSql = cleanSql.toUpperCase();
+    
+    let tableName = '';
+    if (upperSql.includes('FROM TRANSACTIONS')) tableName = 'transactions';
+    else if (upperSql.includes('FROM CATEGORIES')) tableName = 'categories';
+    else if (upperSql.includes('FROM CREDIT_CARDS')) tableName = 'credit_cards';
+    else if (upperSql.includes('FROM ASSETS')) tableName = 'assets';
+    else if (upperSql.includes('FROM PROFILES')) tableName = 'profiles';
+    else return [] as T[];
+    
+    let data = this.getTable(tableName);
+    
+    if (upperSql.startsWith('SELECT COUNT(*)')) {
+      const whereMatch = cleanSql.match(/WHERE\s+([^ORDER|GROUP|LIMIT]+)/i);
+      let count = data.length;
+      if (whereMatch) {
+        const wherePart = whereMatch[1].trim();
+        count = data.filter(row => this.evaluateWhere(tableName, row, wherePart, params, 0)).length;
+      }
+      return [{ count }] as any as T[];
+    }
+    
+    const whereMatch = cleanSql.match(/WHERE\s+([^ORDER|GROUP|LIMIT|LEFT|JOIN]+)/i);
+    if (whereMatch) {
+      const wherePart = whereMatch[1].trim();
+      data = data.filter(row => this.evaluateWhere(tableName, row, wherePart, params, 0));
+    }
+    
+    if (tableName === 'transactions') {
+      const categories = this.getTable('categories');
+      const assets = this.getTable('assets');
+      
+      data = data.map(tx => {
+        const category = categories.find(c => c.id === tx.category_id) || null;
+        const asset = assets.find(a => a.id === tx.asset_id) || null;
+        
+        return {
+          ...tx,
+          category_name: category ? category.name : null,
+          category_icon: category ? category.icon : null,
+          category_color: category ? category.color : null,
+          category_is_default: category ? category.is_default : null,
+          category_sort_order: category ? category.sort_order : null,
+          category_created_at: category ? category.created_at : null,
+          category_parent_id: category ? category.parent_id : null,
+          asset_code: asset ? asset.code : null,
+          asset_name: asset ? asset.name : null,
+          asset_symbol: asset ? asset.symbol : null,
+          asset_asset_type: asset ? asset.asset_type : null,
+          asset_decimals: asset ? asset.decimals : null,
+          asset_is_active: asset ? asset.is_active : null,
+          asset_created_at: asset ? asset.created_at : null,
+        };
+      });
+    }
+    
+    if (upperSql.includes('ORDER BY')) {
+      const orderMatch = cleanSql.match(/ORDER BY\s+([^\s,]+)(?:\s+(ASC|DESC))?/i);
+      if (orderMatch) {
+        const field = orderMatch[1].trim();
+        const dir = orderMatch[2] ? orderMatch[2].toUpperCase() : 'ASC';
+        data.sort((a, b) => {
+          const valA = a[field] ?? '';
+          const valB = b[field] ?? '';
+          if (valA < valB) return dir === 'DESC' ? 1 : -1;
+          if (valA > valB) return dir === 'DESC' ? -1 : 1;
+          return 0;
+        });
+      }
+    }
+    
+    return data as T[];
+  }
+
+  private evaluateWhere(tableName: string, row: any, whereSql: string | undefined, params: any[], paramOffset: number): boolean {
+    if (!whereSql) return true;
+    
+    let normalized = whereSql.trim().replace(/\s+/g, ' ');
+    const conditions = normalized.split(/\s+AND\s+/i);
+    let paramIndex = paramOffset;
+    
+    for (const cond of conditions) {
+      const match = cond.match(/([\w.]+)\s*(=|!=|>|<|>=|<=|IS\s+NOT|IS|LIKE)\s*(.+)$/i);
+      if (!match) continue;
+      
+      let field = match[1].trim();
+      if (field.includes('.')) field = field.split('.')[1];
+      
+      const op = match[2].toUpperCase().replace(/\s+/g, ' ');
+      let rawVal = match[3].trim();
+      
+      let targetVal: any;
+      if (rawVal === '?') {
+        targetVal = params[paramIndex++];
+      } else if (rawVal.startsWith("'") && rawVal.endsWith("'")) {
+        targetVal = rawVal.slice(1, -1);
+      } else if (rawVal.toUpperCase() === 'NULL') {
+        targetVal = null;
+      } else {
+        targetVal = Number(rawVal);
+      }
+      
+      const rowVal = row[field];
+      
+      if (op === '=') {
+        if (rowVal != targetVal) return false;
+      } else if (op === '!=') {
+        if (rowVal == targetVal) return false;
+      } else if (op === '>') {
+        if (!(rowVal > targetVal)) return false;
+      } else if (op === '<') {
+        if (!(rowVal < targetVal)) return false;
+      } else if (op === '>=') {
+        if (!(rowVal >= targetVal)) return false;
+      } else if (op === '<=') {
+        if (!(rowVal <= targetVal)) return false;
+      } else if (op === 'IS') {
+        if (targetVal === null && rowVal !== null && rowVal !== undefined) return false;
+      } else if (op === 'IS NOT') {
+        if (targetVal === null && (rowVal === null || rowVal === undefined)) return false;
+      } else if (op === 'LIKE') {
+        const cleanPattern = targetVal.toString().replace(/%/g, '').toLowerCase();
+        if (!rowVal || !rowVal.toString().toLowerCase().includes(cleanPattern)) return false;
+      }
+    }
+    
+    return true;
+  }
+}
+
+export interface AppDatabase {
+  execAsync(sql: string): Promise<void>;
+  runAsync(sql: string, params?: any[]): Promise<{ lastInsertRowId: number; changes: number }>;
+  getFirstAsync<T = any>(sql: string, params?: any[]): Promise<T | null>;
+  getAllAsync<T = any>(sql: string, params?: any[]): Promise<T[]>;
+}
+
+let dbInstance: AppDatabase | null = null;
+
+export const getDB = (): AppDatabase => {
   if (!dbInstance) {
-    dbInstance = SQLite.openDatabaseSync('quantogastei.db');
+    if (Platform.OS === 'web') {
+      dbInstance = new WebSQLiteDatabase() as unknown as AppDatabase;
+    } else {
+      dbInstance = SQLite.openDatabaseSync('quantogastei.db') as unknown as AppDatabase;
+    }
   }
   return dbInstance;
 };
